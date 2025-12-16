@@ -65,17 +65,19 @@ if st.button("開始分析"):
         with col2:
             st.subheader("📊 特徵數據可視化")
             
-            # 準備數據
-            df_stats = pd.DataFrame({
-                "指標": list(result['features'].keys()),
-                "數值": list(result['features'].values())
+            # 準備數據並將 Key 轉為英文以確保繪圖不出錯
+            plot_data = pd.DataFrame({
+                "Feature": ["Vocabulary Richness", "Avg Sentence Length", "Stopword Ratio", "Sentence Variability"],
+                "Score": list(result['features'].values())
             })
             
-            # 使用 Matplotlib 畫圖
-            fig, ax = plt.subplots(figsize=(8, 4))
-            sns.barplot(x="數值", y="指標", data=df_stats, palette="coolwarm", ax=ax)
-            ax.set_title("文本特徵值統計量")
-            st.pyplot(fig)
+            # 使用 Streamlit 原生圖表 (自動避開中文字體問題)
+            # 將 Feature 設為索引以利 st.bar_chart 讀取
+            st.bar_chart(data=plot_data, x="Feature", y="Score", color="#4db6ac")
             
-            # 顯示數據表格
-            st.dataframe(df_stats, use_container_width=True)
+            # 下方表格保留中文，表格在網頁渲染不會有亂碼問題
+            df_display = pd.DataFrame({
+                "特徵指標": list(result['features'].keys()),
+                "數值": [f"{v:.3f}" for v in result['features'].values()]
+            })
+            st.dataframe(df_display, use_container_width=True)

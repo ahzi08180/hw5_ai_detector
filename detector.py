@@ -13,8 +13,8 @@ except LookupError:
 
 class AIClassifier:
     def __init__(self):
-        # 增加隨機森林的深度以提高敏感度
-        self.model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
+        # 這裡仍然保留模型，但我們會結合統計權重來讓分數更靈敏
+        self.model = RandomForestClassifier(n_estimators=100, random_state=42)
         self.is_trained = False
 
     def extract_features(self, text):
@@ -22,73 +22,80 @@ class AIClassifier:
         words = word_tokenize(text.lower())
         word_set = set(words)
         
-        # 1. 詞彙豐富度 (AI 較低)
+        # 特徵 1: 詞彙豐富度 (TTR) - 人類通常 > 0.6
         ttr = len(word_set) / len(words) if len(words) > 0 else 0
         
-        # 2. 平均句長 (AI 句長通常較一致且偏長)
+        # 特徵 2: 平均句長 - AI 常在 20-30 之間
         avg_sent_len = len(words) / len(sentences) if len(sentences) > 0 else 0
         
-        # 3. 停用詞比例 (AI 常使用 fillers)
+        # 特徵 3: 停用詞比例 - AI 較高
         stop_words = {'the', 'is', 'and', 'a', 'to', 'in', 'it', 'of', 'that', 'with', 'for'}
         stop_ratio = len([w for w in words if w in stop_words]) / len(words) if len(words) > 0 else 0
         
-        # 4. 句子長度的標準差 (AI 句子長短通常很接近，人類則落差大)
+        # 特徵 4: 句長變化 (標準差) - 人類通常 > 8
         sent_lengths = [len(word_tokenize(s)) for s in sentences]
         sent_std = np.std(sent_lengths) if len(sent_lengths) > 1 else 0
 
         return np.array([ttr, avg_sent_len, stop_ratio, sent_std])
 
     def mock_train(self):
-        # 擴大模擬數據集，讓模型學會區分
-        # 特徵序：[TTR, Avg_Sent_Len, Stop_Ratio, Sent_Std]
+        # 這裡我們模擬較極端的數據點，讓模型學習區分邊界
         X_train = np.array([
-            # --- AI 典型的模式 (低變化、規律句長、高停用詞) ---
-            [0.30, 25, 0.55, 2.0], 
-            [0.35, 30, 0.50, 1.5],
-            [0.32, 22, 0.48, 2.5],
-            [0.38, 28, 0.52, 1.8],
-            # --- Human 典型的模式 (高變化、不規律句長、低停用詞) ---
-            [0.70, 12, 0.20, 12.0],
-            [0.65, 15, 0.25, 10.5],
-            [0.80, 10, 0.15, 15.2],
-            [0.75, 18, 0.30, 8.5]
+            [0.3, 30, 0.6, 1.0], [0.35, 25, 0.5, 2.0], # AI 典型
+            [0.7, 10, 0.2, 15.0], [0.8, 15, 0.1, 10.0]  # Human 典型
         ])
-        # 0 為 AI, 1 為 Human
-        y_train = np.array([0, 0, 0, 0, 1, 1, 1, 1])
-        
+        y_train = np.array([0, 0, 1, 1])
         self.model.fit(X_train, y_train)
         self.is_trained = True
 
     def analyze(self, text):
         if not self.is_trained: self.mock_train()
         
-        features = self.extract_features(text)
-        prob = self.model.predict_proba(features.reshape(1, -1))[0]
+        feat = self.extract_features(text)
         
-        prediction_idx = np.argmax(prob)
-        prediction = "Human" if prediction_idx == 1 else "AI"
-        confidence = prob[prediction_idx]
+        # --- 動態權重評分系統 (讓分數動起來的關鍵) ---
+        # 我們計算一個「人類指數」(0 到 1)
+        human_score = 0.0
         
+        # TTR 貢獻 (越高越像人類)
+        human_score += min(feat[0] / 0.8, 1.0) * 0.4 
+        # 句長變化貢獻 (變化越大越像人類)
+        human_score += min(feat[3] / 15.0, 1.0) * 0.4
+        # 停用詞貢獻 (越低越像人類)
+        human_score += (1.0 - min(feat[2] / 0.6, 1.0)) * 0.2
+        
+        # 結合模型預測與權重評分
+        model_prob = self.model.predict_proba(feat.reshape(1, -1))[0]
+        
+        # 最終信心分數混合 (50% 來自模型, 50% 來自統計特徵)
+        final_human_prob = (model_prob[1] * 0.5) + (human_score * 0.5)
+        
+        if final_human_prob >= 0.5:
+            prediction = "Human"
+            confidence = final_human_prob
+        else:
+            prediction = "AI"
+            confidence = 1.0 - final_human_prob
+            
+        # 修正信心分數過於極端的情況
+        confidence = clip_confidence = max(min(confidence, 0.99), 0.51)
+
         # 動態解釋
         explanations = []
-        if features[0] < 0.5:
-            explanations.append("- **詞彙單一性**：文字重複性偏高，符合 AI 生成特徵。")
-        else:
-            explanations.append("- **詞彙豐富度**：用詞變化多樣，具有人類寫作風格。")
-            
-        if features[3] < 5:
-            explanations.append("- **節奏規律性**：句長落差極小，語氣顯得較為機械化。")
-        else:
-            explanations.append("- **句式變化**：長短句交錯明顯，這是人類自然寫作的特點。")
+        if feat[0] < 0.45: explanations.append("- **詞彙豐富度低**：用詞重複性高。")
+        else: explanations.append("- **詞彙豐富度高**：用詞靈活。")
+        
+        if feat[3] < 5: explanations.append("- **句式過於規律**：缺乏人類寫作的隨機性。")
+        else: explanations.append("- **句式變化明顯**：長短句交錯，符合人類特徵。")
         
         return {
             "label": prediction,
             "confidence": confidence,
             "features": {
-                "詞彙豐富度": features[0],
-                "平均句長": features[1],
-                "常用詞比例": features[2],
-                "句長變化程度": features[3]
+                "詞彙豐富度": feat[0],
+                "平均句長": feat[1],
+                "常用詞比例": feat[2],
+                "句長變化程度": feat[3]
             },
             "explanation": "\n".join(explanations)
         }
