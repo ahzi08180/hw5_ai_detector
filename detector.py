@@ -11,76 +11,74 @@ except LookupError:
 
 class AIClassifier:
     def __init__(self):
-        # AI 特徵詞 (過多則扣分)
-        self.ai_markers = {'furthermore', 'moreover', 'consequently', 'pivotal', 'transformative', 'fostering'}
-        # 人類特徵詞 (出現則加分：個人化、感性、口語)
-        self.human_markers = {'i ', 'me', 'my', 'think', 'believe', 'feel', 'maybe', 'actually', 'personal'}
+        self.ai_markers = {'furthermore', 'moreover', 'consequently', 'pivotal', 'transformative', 'fostering', 'additionally'}
+        self.human_markers = {'i', 'me', 'my', 'think', 'believe', 'feel', 'maybe', 'actually', 'personal', 'wonder'}
 
     def extract_features(self, text):
         sentences = sent_tokenize(text)
         words = word_tokenize(text.lower())
+        if not words: return None
         
-        # 1. 句長變異性 (人類寫作的核心：長短句交錯)
         sent_lengths = [len(word_tokenize(s)) for s in sentences]
-        sent_std = np.std(sent_lengths) if len(sent_lengths) > 1 else 0
         
-        # 2. AI 詞彙密度
-        ai_density = sum(1 for w in words if w in self.ai_markers) / len(words) if len(words) > 0 else 0
-        
-        # 3. 人類特徵密度
-        human_density = sum(1 for w in words if w in self.human_markers) / len(words) if len(words) > 0 else 0
-        
-        # 4. 詞彙豐富度 (TTR)
-        ttr = len(set(words)) / len(words) if len(words) > 0 else 0
-
         return {
-            "sent_std": sent_std,
-            "ai_density": ai_density,
-            "human_density": human_density,
-            "ttr": ttr
+            "sent_std": np.std(sent_lengths) if len(sent_lengths) > 1 else 0,
+            "ai_density": sum(1 for w in words if w in self.ai_markers) / len(words),
+            "human_density": sum(1 for w in words if w in self.human_markers) / len(words),
+            "ttr": len(set(words)) / len(words),
+            "word_count": len(words)
         }
 
     def analyze(self, text):
         f = self.extract_features(text)
+        if not f: return {"label": "Error", "confidence": 0, "features": {}, "explanation": ""}
         
-        # 基準分：0.5 (AI < 0.5 < Human)
-        score = 0.5
+        # --- 連續機率計算邏輯 ---
+        # 我們將各項指標轉換為 0~1 之間的機率值，最後取加權平均
         
-        # --- 動態加減分邏輯 ---
-        # 句長落差獎勵 (人類寫作通常大於 10)
-        if f['sent_std'] > 12: score += 0.25
-        elif f['sent_std'] < 4: score -= 0.2
+        # 1. 句長變異性得分 (越多樣越像人, 15為滿分基準)
+        s_std = min(f['sent_std'] / 15.0, 1.0)
         
-        # 個人化語氣獎勵
-        if f['human_density'] > 0.01: score += 0.2
+        # 2. 詞彙豐富度得分 (0.7為人寫滿分基準)
+        s_ttr = min(f['ttr'] / 0.7, 1.0)
         
-        # AI 轉折詞懲罰
-        if f['ai_density'] > 0.015: score -= 0.25
+        # 3. 語氣偏向得分 (人類詞彙 vs AI 詞彙)
+        # 預設 0.5，人詞多就往上加，AI詞多就往下減
+        tone_diff = (f['human_density'] - f['ai_density']) * 10 # 放大差異
+        s_tone = max(min(0.5 + tone_diff, 1.0), 0.0)
         
-        # 詞彙豐富度平衡
-        if f['ttr'] > 0.6: score += 0.1
-        elif f['ttr'] < 0.4: score -= 0.1
+        # --- 最終加權平均 ---
+        # 權重分配：變異性(40%) + 語氣(40%) + 豐富度(20%)
+        final_human_prob = (s_std * 0.4) + (s_tone * 0.4) + (s_ttr * 0.2)
+        
+        # 判定
+        if final_human_prob >= 0.5:
+            prediction = "Human"
+            confidence = final_human_prob
+        else:
+            prediction = "AI"
+            confidence = 1.0 - final_human_prob
+            
+        # 確保信心分數看起來更自然 (51%~99%)
+        confidence = 0.5 + (confidence - 0.5) * 0.98
+        confidence = max(min(confidence, 0.99), 0.51)
 
-        # 最終判定
-        final_score = max(min(score, 0.98), 0.02)
-        prediction = "Human" if final_score >= 0.5 else "AI"
-        confidence = final_score if final_score >= 0.5 else 1.0 - final_score
-        
-        # 視覺化解釋
+        # 解釋邏輯
         explanations = []
-        if f['sent_std'] > 12: explanations.append("✅ **節奏感強**：觀察到明顯的長短句交錯，符合人類自然寫作風格。")
-        if f['human_density'] > 0.01: explanations.append("✅ **個人化色彩**：文中包含主觀視角詞彙，這在 AI 生成中較少見。")
-        if f['ai_density'] > 0.015: explanations.append("❌ **AI 慣用轉折**：連接詞使用過於刻意，與語言模型生成習慣吻合。")
-        if f['sent_std'] < 4: explanations.append("❌ **語句僵硬**：句子長度過於平均，顯得機械化。")
+        if s_std > 0.7: explanations.append("✅ **節奏鮮明**：句子長短變化極大，極具人類隨性寫作特徵。")
+        elif s_std < 0.3: explanations.append("❌ **節奏死板**：句子長度異常均勻，與 AI 生成邏輯吻合。")
+        
+        if s_tone < 0.4: explanations.append("❌ **學術腔調重**：偵測到過多 AI 偏好的轉接詞彙。")
+        elif s_tone > 0.6: explanations.append("✅ **主觀口吻**：文字中帶有明顯的人類情緒或第一人稱特徵。")
 
         return {
             "label": prediction,
             "confidence": confidence,
             "features": {
-                "句長變異性 (越跳動越像人)": f['sent_std'],
-                "人類特徵詞頻": f['human_density'],
-                "AI 特徵詞頻": f['ai_density'],
+                "句長多樣性指標": f['sent_std'],
+                "人類詞彙密度": f['human_density'],
+                "AI 詞彙密度": f['ai_density'],
                 "詞彙豐富度": f['ttr']
             },
-            "explanation": "\n".join(explanations) if explanations else "文字特徵均勻，處於判定邊界。"
+            "explanation": "\n".join(explanations) if explanations else "文字特徵混合，判定為中性。建議增加字數以提高準確度。"
         }
