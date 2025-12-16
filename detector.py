@@ -2,9 +2,7 @@ import numpy as np
 import re
 import nltk
 from nltk.tokenize import sent_tokenize, word_tokenize
-from sklearn.ensemble import RandomForestClassifier
 
-# 確保 NLTK 資源下載
 try:
     nltk.data.find('tokenizers/punkt')
 except LookupError:
@@ -13,62 +11,60 @@ except LookupError:
 
 class AIClassifier:
     def __init__(self):
-        # 這裡仍然保留模型，但我們會結合統計權重來讓分數更靈敏
-        self.model = RandomForestClassifier(n_estimators=100, random_state=42)
-        self.is_trained = False
+        # AI 常用詞彙與轉折詞庫 (AI 傾向過度使用這些詞)
+        self.ai_markers = {
+            'furthermore', 'moreover', 'consequently', 'in conclusion', 
+            'additionally', 'pivotal', 'crucial', 'it is important to note',
+            'transformative', 'fostering', 'unparalleled', 'contemporary'
+        }
 
     def extract_features(self, text):
         sentences = sent_tokenize(text)
         words = word_tokenize(text.lower())
         word_set = set(words)
         
-        # 特徵 1: 詞彙豐富度 (TTR) - 人類通常 > 0.6
+        # 1. 詞彙豐富度 (TTR)
         ttr = len(word_set) / len(words) if len(words) > 0 else 0
         
-        # 特徵 2: 平均句長 - AI 常在 20-30 之間
-        avg_sent_len = len(words) / len(sentences) if len(sentences) > 0 else 0
-        
-        # 特徵 3: 停用詞比例 - AI 較高
-        stop_words = {'the', 'is', 'and', 'a', 'to', 'in', 'it', 'of', 'that', 'with', 'for'}
-        stop_ratio = len([w for w in words if w in stop_words]) / len(words) if len(words) > 0 else 0
-        
-        # 特徵 4: 句長變化 (標準差) - 人類通常 > 8
+        # 2. 句長變化 (標準差) - AI 的標準差通常 < 4
         sent_lengths = [len(word_tokenize(s)) for s in sentences]
         sent_std = np.std(sent_lengths) if len(sent_lengths) > 1 else 0
+        
+        # 3. AI 標記詞密度 (核心敏感度)
+        marker_count = sum(1 for w in words if w in self.ai_markers)
+        marker_density = marker_count / len(words) if len(words) > 0 else 0
+        
+        # 4. 「這 (This)」開頭句子的比例
+        # AI 非常喜歡用 "This shift...", "This development..." 作為句子開頭
+        this_starts = sum(1 for s in sentences if s.lower().startswith('this'))
+        this_ratio = this_starts / len(sentences) if len(sentences) > 0 else 0
 
-        return np.array([ttr, avg_sent_len, stop_ratio, sent_std])
-
-    def mock_train(self):
-        # 這裡我們模擬較極端的數據點，讓模型學習區分邊界
-        X_train = np.array([
-            [0.3, 30, 0.6, 1.0], [0.35, 25, 0.5, 2.0], # AI 典型
-            [0.7, 10, 0.2, 15.0], [0.8, 15, 0.1, 10.0]  # Human 典型
-        ])
-        y_train = np.array([0, 0, 1, 1])
-        self.model.fit(X_train, y_train)
-        self.is_trained = True
+        return {
+            "ttr": ttr,
+            "sent_std": sent_std,
+            "marker_density": marker_density,
+            "this_ratio": this_ratio
+        }
 
     def analyze(self, text):
-        if not self.is_trained: self.mock_train()
+        f = self.extract_features(text)
         
-        feat = self.extract_features(text)
+        # --- 高敏感度評分邏輯 ---
+        # 初始分數從 0.5 開始 (0 = AI, 1 = Human)
+        raw_score = 0.5
         
-        # --- 動態權重評分系統 (讓分數動起來的關鍵) ---
-        # 我們計算一個「人類指數」(0 到 1)
-        human_score = 0.0
+        # 懲罰項 (降低此分數代表趨向 AI)
+        if f['sent_std'] < 5: raw_score -= 0.25  # 句長太平均
+        if f['marker_density'] > 0.02: raw_score -= 0.2  # 太多 AI 轉折詞
+        if f['this_ratio'] > 0.2: raw_score -= 0.15      # 過多 This 開頭句
+        if f['ttr'] < 0.45: raw_score -= 0.1             # 詞彙重複
         
-        # TTR 貢獻 (越高越像人類)
-        human_score += min(feat[0] / 0.8, 1.0) * 0.4 
-        # 句長變化貢獻 (變化越大越像人類)
-        human_score += min(feat[3] / 15.0, 1.0) * 0.4
-        # 停用詞貢獻 (越低越像人類)
-        human_score += (1.0 - min(feat[2] / 0.6, 1.0)) * 0.2
+        # 獎勵項 (增加此分數代表趨向 Human)
+        if f['sent_std'] > 10: raw_score += 0.25 # 句式落差大
+        if f['ttr'] > 0.65: raw_score += 0.15    # 用詞極度豐富
         
-        # 結合模型預測與權重評分
-        model_prob = self.model.predict_proba(feat.reshape(1, -1))[0]
-        
-        # 最終信心分數混合 (50% 來自模型, 50% 來自統計特徵)
-        final_human_prob = (model_prob[1] * 0.5) + (human_score * 0.5)
+        # 限制範圍
+        final_human_prob = max(min(raw_score, 0.98), 0.02)
         
         if final_human_prob >= 0.5:
             prediction = "Human"
@@ -77,25 +73,23 @@ class AIClassifier:
             prediction = "AI"
             confidence = 1.0 - final_human_prob
             
-        # 修正信心分數過於極端的情況
-        confidence = clip_confidence = max(min(confidence, 0.99), 0.51)
-
-        # 動態解釋
+        # 解釋邏輯
         explanations = []
-        if feat[0] < 0.45: explanations.append("- **詞彙豐富度低**：用詞重複性高。")
-        else: explanations.append("- **詞彙豐富度高**：用詞靈活。")
-        
-        if feat[3] < 5: explanations.append("- **句式過於規律**：缺乏人類寫作的隨機性。")
-        else: explanations.append("- **句式變化明顯**：長短句交錯，符合人類特徵。")
-        
+        if f['marker_density'] > 0.02: 
+            explanations.append("- **偵測到過度使用的連接詞**：使用了大量如 Furthermore, Moreover 等 AI 偏好的轉折語。")
+        if f['sent_std'] < 5: 
+            explanations.append("- **語句節奏過於機械**：句子長度幾乎一致，缺乏人類寫作的隨機波動。")
+        if f['this_ratio'] > 0.2:
+            explanations.append("- **句式結構單一**：過多句子以「This...」開頭，這是語言模型常見的銜接方式。")
+
         return {
             "label": prediction,
             "confidence": confidence,
             "features": {
-                "詞彙豐富度": feat[0],
-                "平均句長": feat[1],
-                "常用詞比例": feat[2],
-                "句長變化程度": feat[3]
+                "詞彙豐富度": f['ttr'],
+                "句長變異性": f['sent_std'],
+                "AI 特徵詞頻": f['marker_density'],
+                "句式重覆率": f['this_ratio']
             },
-            "explanation": "\n".join(explanations)
+            "explanation": "\n".join(explanations) if explanations else "- 文本特徵較為平衡，判定機率偏向中間值。"
         }
