@@ -4,9 +4,12 @@ import nltk
 from nltk.tokenize import sent_tokenize, word_tokenize
 from sklearn.ensemble import RandomForestClassifier
 
-# 在部署環境中需要下載
-nltk.download('punkt')
-nltk.download('punkt_tab')
+# 下載必要的 NLTK 數據
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt')
+    nltk.download('punkt_tab')
 
 class AIClassifier:
     def __init__(self):
@@ -27,11 +30,9 @@ class AIClassifier:
         return np.array([ttr, avg_sent_len, stop_ratio, punctuation_count])
 
     def mock_train(self):
-        # 建立更真實的模擬數據
-        # AI: 低豐富度, 長句, 高停用詞 | Human: 高豐富度, 短句, 多標點
         X_train = np.array([
-            [0.35, 28, 0.50, 0.05], [0.40, 25, 0.45, 0.1], # AI
-            [0.75, 12, 0.20, 0.6], [0.65, 15, 0.25, 0.4]   # Human
+            [0.35, 28, 0.50, 0.05], [0.40, 25, 0.45, 0.1], # AI 典型
+            [0.75, 12, 0.20, 0.6], [0.65, 15, 0.25, 0.4]   # Human 典型
         ])
         y_train = np.array([0, 0, 1, 1])
         self.model.fit(X_train, y_train)
@@ -45,13 +46,21 @@ class AIClassifier:
         prediction = "Human" if np.argmax(prob) == 1 else "AI"
         confidence = max(prob)
         
+        # 根據特徵生成動態解釋
+        explanations = []
+        if features[0] < 0.5: explanations.append("- 詞彙變化較少，重複率高。")
+        else: explanations.append("- 詞彙豐富度高，具有人類寫作特徵。")
+        
+        if features[1] > 20: explanations.append("- 句子平均長度較長且結構規律。")
+        
         return {
             "label": prediction,
             "confidence": confidence,
             "features": {
-                "詞彙豐富度 (TTR)": features[0],
+                "詞彙豐富度": features[0],
                 "平均句長": features[1],
                 "常用詞比例": features[2],
-                "情感標點頻率": features[3]
-            }
+                "感性符號率": features[3]
+            },
+            "explanation": "\n".join(explanations)
         }

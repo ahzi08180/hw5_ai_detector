@@ -38,7 +38,7 @@ else:
 # 顯示文字輸入框（這會讓使用者看到目前的內容，也可以手動修改）
 text_to_analyze = st.text_area("待分析文章內容", value=current_text, height=300, placeholder="在此輸入或修改內容...")
 
-if st.button("開始分析", variant="primary"):
+if st.button("開始分析"):
     if len(text_to_analyze.strip()) < 20:
         st.warning("⚠️ 請輸入足夠長度的文字（至少 20 個字元）。")
     else:
